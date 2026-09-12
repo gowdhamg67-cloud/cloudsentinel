@@ -150,3 +150,7 @@ payload.json
 *.zip
 lambda-response.json
 **/node_modules/
+infrastructure/ai-test-payload.json
+infrastructure/ai-test-response.json
+infrastructure/bedrock-direct-test.json
+bedrock-direct-test.json

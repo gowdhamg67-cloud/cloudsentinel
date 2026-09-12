@@ -48,6 +48,16 @@ resource "aws_iam_role_policy" "incident_lambda_policy" {
         ]
 
         Resource = "*"
+      },
+
+      {
+        Effect = "Allow"
+
+        Action = [
+          "bedrock:InvokeModel"
+        ]
+
+        Resource = "*"
       }
     ]
   })
