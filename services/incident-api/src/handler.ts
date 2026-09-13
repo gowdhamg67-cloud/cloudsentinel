@@ -13,6 +13,7 @@ import { randomUUID } from "crypto";
 import {
   analyzeIncident,
   IncidentData,
+  IncidentAnalysis,
 } from "./ai-analyzer";
 
 import {
@@ -36,6 +37,37 @@ const TABLE_NAME =
   process.env.INCIDENTS_TABLE_NAME ||
   "cloudsentinel-incidents";
 
+const AI_MODE =
+  process.env.AI_MODE || "BEDROCK";
+
+// --------------------------------------------------
+// TEST AI ANALYSIS
+// --------------------------------------------------
+
+function generateTestAnalysis(
+  incident: IncidentData,
+): IncidentAnalysis {
+
+  console.log(
+    "🧪 TEST AI MODE ENABLED",
+  );
+
+  return {
+    severity: "CRITICAL",
+
+    likely_cause:
+      "Simulated payment service failure.",
+
+    recommended_action:
+      "RESTART",
+
+    confidence: 99,
+
+    explanation:
+      `Test mode detected an unhealthy ${incident.service} service and recommends a controlled restart.`,
+  };
+}
+
 // --------------------------------------------------
 // INCIDENT API
 // --------------------------------------------------
@@ -52,6 +84,11 @@ export const handler = async (event: any) => {
 
   console.log(
     "======================================",
+  );
+
+  console.log(
+    "AI MODE:",
+    AI_MODE,
   );
 
   console.log(
@@ -87,7 +124,8 @@ export const handler = async (event: any) => {
       statusCode: 400,
 
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type":
+          "application/json",
       },
 
       body: JSON.stringify({
@@ -110,7 +148,8 @@ export const handler = async (event: any) => {
     created_at: string;
   } = {
 
-    incident_id: incidentId,
+    incident_id:
+      incidentId,
 
     service:
       body.service || "unknown",
@@ -185,7 +224,8 @@ export const handler = async (event: any) => {
       statusCode: 500,
 
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type":
+          "application/json",
       },
 
       body: JSON.stringify({
@@ -206,14 +246,24 @@ export const handler = async (event: any) => {
     "\nSTEP 2 — AI INCIDENT ANALYSIS",
   );
 
-  let analysis;
+  let analysis: IncidentAnalysis;
 
   try {
 
-    analysis =
-      await analyzeIncident(
-        incident,
-      );
+    if (AI_MODE === "TEST") {
+
+      analysis =
+        generateTestAnalysis(
+          incident,
+        );
+
+    } else {
+
+      analysis =
+        await analyzeIncident(
+          incident,
+        );
+    }
 
     console.log(
       "✅ AI analysis completed:",
@@ -311,12 +361,7 @@ export const handler = async (event: any) => {
   // STEP 6 — UPDATE INCIDENT
   // --------------------------------------------------
 
-  let finalStatus:
-    | "RECOVERED"
-    | "MONITORED"
-    | "BLOCKED";
-
-  finalStatus =
+  const finalStatus =
     selfHealingResult.overall_status;
 
   console.log(
@@ -375,9 +420,6 @@ export const handler = async (event: any) => {
       "⚠️ Failed to update incident:",
       error,
     );
-
-    // The incident and self-healing result
-    // are still returned to the caller.
   }
 
   // --------------------------------------------------
