@@ -5,6 +5,7 @@ import {
 import {
   DynamoDBDocumentClient,
   PutCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 
 import { randomUUID } from "crypto";
@@ -15,35 +16,57 @@ import {
 } from "./ai-analyzer";
 
 import {
-  evaluateRecoveryPolicy,
-} from "./policy-engine";
+  runSelfHealing,
+} from "./self-healing-engine";
 
-import {
-  executeRecovery,
-} from "./recovery-engine";
+// --------------------------------------------------
+// AWS CLIENTS
+// --------------------------------------------------
 
 const client = new DynamoDBClient({});
 
 const dynamodb =
   DynamoDBDocumentClient.from(client);
 
+// --------------------------------------------------
+// CONFIGURATION
+// --------------------------------------------------
+
 const TABLE_NAME =
   process.env.INCIDENTS_TABLE_NAME ||
   "cloudsentinel-incidents";
 
+// --------------------------------------------------
+// INCIDENT API
+// --------------------------------------------------
+
 export const handler = async (event: any) => {
+
   console.log(
-    "CloudSentinel Incident API received:",
+    "======================================",
+  );
+
+  console.log(
+    " CLOUDSENTINEL INCIDENT API",
+  );
+
+  console.log(
+    "======================================",
+  );
+
+  console.log(
+    "Incoming event:",
     event,
   );
 
   // --------------------------------------------------
-  // STEP 1: Parse incoming request body
+  // STEP 1 — PARSE REQUEST
   // --------------------------------------------------
 
   let body: any;
 
   try {
+
     body =
       typeof event.body === "string"
         ? JSON.parse(
@@ -52,7 +75,9 @@ export const handler = async (event: any) => {
               .replace(/^ï»¿/, ""),
           )
         : event.body || event;
+
   } catch (error) {
+
     console.error(
       "Invalid request body:",
       error,
@@ -62,8 +87,7 @@ export const handler = async (event: any) => {
       statusCode: 400,
 
       headers: {
-        "Content-Type":
-          "application/json",
+        "Content-Type": "application/json",
       },
 
       body: JSON.stringify({
@@ -74,39 +98,31 @@ export const handler = async (event: any) => {
   }
 
   // --------------------------------------------------
-  // STEP 2: Generate unique incident ID
+  // STEP 2 — CREATE INCIDENT
   // --------------------------------------------------
 
   const incidentId =
     randomUUID();
-
-  // --------------------------------------------------
-  // STEP 3: Build incident data
-  // --------------------------------------------------
 
   const incident: IncidentData & {
     incident_id: string;
     status: string;
     created_at: string;
   } = {
-    incident_id:
-      incidentId,
+
+    incident_id: incidentId,
 
     service:
-      body.service ||
-      "unknown",
+      body.service || "unknown",
 
     severity:
-      body.severity ||
-      "UNKNOWN",
+      body.severity || "UNKNOWN",
 
     error_rate:
-      Number(body.error_rate) ||
-      0,
+      Number(body.error_rate) || 0,
 
     latency_ms:
-      Number(body.latency_ms) ||
-      0,
+      Number(body.latency_ms) || 0,
 
     status:
       "DETECTED",
@@ -124,37 +140,145 @@ export const handler = async (event: any) => {
       body.recent_deployment,
 
     memory_usage:
-      Number(body.memory_usage) ||
-      undefined,
+      Number(body.memory_usage) || undefined,
   };
 
   console.log(
-    "Incident created:",
+    "\nSTEP 1 — INCIDENT DETECTED",
+  );
+
+  console.log(
     incident,
   );
 
   // --------------------------------------------------
-  // STEP 4: Save incident to DynamoDB
+  // STEP 3 — SAVE INCIDENT
   // --------------------------------------------------
 
   try {
+
     await dynamodb.send(
       new PutCommand({
+
         TableName:
           TABLE_NAME,
 
         Item:
           incident,
+
       }),
     );
 
     console.log(
-      "Incident saved to DynamoDB:",
+      "✅ Incident saved to DynamoDB:",
       incidentId,
     );
+
   } catch (error) {
+
     console.error(
-      "Failed to save incident to DynamoDB:",
+      "❌ Failed to save incident:",
+      error,
+    );
+
+    return {
+      statusCode: 500,
+
+      headers: {
+        "Content-Type": "application/json",
+      },
+
+      body: JSON.stringify({
+        message:
+          "Failed to save incident",
+
+        incident_id:
+          incidentId,
+      }),
+    };
+  }
+
+  // --------------------------------------------------
+  // STEP 4 — AI INCIDENT ANALYSIS
+  // --------------------------------------------------
+
+  console.log(
+    "\nSTEP 2 — AI INCIDENT ANALYSIS",
+  );
+
+  let analysis;
+
+  try {
+
+    analysis =
+      await analyzeIncident(
+        incident,
+      );
+
+    console.log(
+      "✅ AI analysis completed:",
+      analysis,
+    );
+
+  } catch (error) {
+
+    console.error(
+      "❌ AI analysis failed:",
+      error,
+    );
+
+    return {
+      statusCode: 202,
+
+      headers: {
+        "Content-Type":
+          "application/json",
+      },
+
+      body: JSON.stringify({
+
+        message:
+          "Incident detected, but AI analysis is currently unavailable",
+
+        incident,
+
+        ai_analysis:
+          null,
+
+        next_step:
+          "CloudSentinel will continue monitoring the incident.",
+
+      }),
+    };
+  }
+
+  // --------------------------------------------------
+  // STEP 5 — SELF-HEALING ENGINE
+  // --------------------------------------------------
+
+  console.log(
+    "\nSTEP 3 — CLOUDSENTINEL SELF-HEALING",
+  );
+
+  let selfHealingResult;
+
+  try {
+
+    selfHealingResult =
+      await runSelfHealing(
+        incident,
+        analysis,
+      );
+
+    console.log(
+      "✅ Self-healing completed:",
+      selfHealingResult,
+    );
+
+  } catch (error) {
+
+    console.error(
+      "❌ Self-healing engine failed:",
       error,
     );
 
@@ -167,159 +291,117 @@ export const handler = async (event: any) => {
       },
 
       body: JSON.stringify({
-        message:
-          "Failed to save incident",
 
-        error:
-          "Database operation failed",
+        message:
+          "Incident analyzed, but self-healing execution failed",
+
+        incident,
+
+        ai_analysis:
+          analysis,
+
+        self_healing:
+          null,
+
       }),
     };
   }
 
   // --------------------------------------------------
-  // STEP 5: AI Incident Analysis
+  // STEP 6 — UPDATE INCIDENT
   // --------------------------------------------------
 
-  let analysis;
+  let finalStatus:
+    | "RECOVERED"
+    | "MONITORED"
+    | "BLOCKED";
+
+  finalStatus =
+    selfHealingResult.overall_status;
+
+  console.log(
+    "\nSTEP 4 — UPDATE INCIDENT",
+  );
 
   try {
-    analysis =
-      await analyzeIncident(
-        incident,
-      );
+
+    await dynamodb.send(
+      new UpdateCommand({
+
+        TableName:
+          TABLE_NAME,
+
+        Key: {
+          incident_id:
+            incidentId,
+        },
+
+        UpdateExpression:
+          "SET #s = :status, ai_analysis = :analysis, policy_decision = :policy, recovery_result = :recovery, overall_status = :overall",
+
+        ExpressionAttributeNames: {
+          "#s":
+            "status",
+        },
+
+        ExpressionAttributeValues: {
+
+          ":status":
+            finalStatus,
+
+          ":analysis":
+            selfHealingResult.analysis,
+
+          ":policy":
+            selfHealingResult.policy,
+
+          ":recovery":
+            selfHealingResult.recovery,
+
+          ":overall":
+            finalStatus,
+        },
+
+      }),
+    );
 
     console.log(
-      "AI Incident Analysis:",
-      analysis,
+      "✅ Incident updated in DynamoDB",
     );
+
   } catch (error) {
+
     console.error(
-      "AI analysis failed:",
+      "⚠️ Failed to update incident:",
       error,
     );
 
-    // The incident is already safely
-    // stored in DynamoDB.
-
-    return {
-      statusCode: 202,
-
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
-
-      body: JSON.stringify({
-        message:
-          "Incident detected, but AI analysis is currently unavailable",
-
-        incident:
-
-          incident,
-
-        ai_analysis:
-          null,
-
-        policy_decision:
-          null,
-
-        recovery_result:
-          null,
-      }),
-    };
+    // The incident and self-healing result
+    // are still returned to the caller.
   }
 
   // --------------------------------------------------
-  // STEP 6: Policy / Safety Engine
+  // STEP 7 — FINAL RESPONSE
   // --------------------------------------------------
-
-  const policyDecision =
-    evaluateRecoveryPolicy(
-      incident,
-      analysis,
-    );
 
   console.log(
-    "CloudSentinel Policy Decision:",
-    policyDecision,
+    "\n======================================",
   );
 
-  // --------------------------------------------------
-  // STEP 7: Recovery Engine
-  // --------------------------------------------------
+  console.log(
+    ` FINAL STATUS: ${finalStatus}`,
+  );
 
-  let recoveryResult =
-    null;
-
-  if (policyDecision.approved) {
-    try {
-      recoveryResult =
-        await executeRecovery(
-          incident,
-          policyDecision.action,
-        );
-
-      console.log(
-        "CloudSentinel Recovery Result:",
-        recoveryResult,
-      );
-    } catch (error) {
-      console.error(
-        "Recovery execution failed:",
-        error,
-      );
-
-      recoveryResult = {
-        action:
-          policyDecision.action,
-
-        status:
-          "SKIPPED",
-
-        message:
-          "Recovery execution failed.",
-
-        recovery_time_ms:
-          0,
-
-        verified:
-          false,
-      };
-    }
-  } else {
-    console.log(
-      "Recovery not executed because policy rejected the action.",
-    );
-  }
-
-  // --------------------------------------------------
-  // STEP 8: Determine final incident status
-  // --------------------------------------------------
-
-  let finalStatus =
-    "ANALYZED";
-
-  if (
-    policyDecision.approved &&
-    recoveryResult?.verified
-  ) {
-    finalStatus =
-      "RECOVERED";
-  }
-
-  if (
-    !policyDecision.approved
-  ) {
-    finalStatus =
-      "MONITORING";
-  }
-
-  // --------------------------------------------------
-  // STEP 9: Return complete CloudSentinel response
-  // --------------------------------------------------
+  console.log(
+    "======================================",
+  );
 
   return {
-    statusCode: 201,
+
+    statusCode:
+      finalStatus === "RECOVERED"
+        ? 200
+        : 202,
 
     headers: {
       "Content-Type":
@@ -327,23 +409,27 @@ export const handler = async (event: any) => {
     },
 
     body: JSON.stringify({
+
       message:
         "CloudSentinel incident processing completed",
 
-      incident: {
-        ...incident,
-        status:
-          finalStatus,
-      },
+      incident_id:
+        incidentId,
+
+      incident,
 
       ai_analysis:
-        analysis,
+        selfHealingResult.analysis,
 
-      policy_decision:
-        policyDecision,
+      policy:
+        selfHealingResult.policy,
 
-      recovery_result:
-        recoveryResult,
+      recovery:
+        selfHealingResult.recovery,
+
+      overall_status:
+        selfHealingResult.overall_status,
+
     }),
   };
 };
